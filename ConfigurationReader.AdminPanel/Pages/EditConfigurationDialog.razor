@@ -1,0 +1,154 @@
+﻿@* ConfigurationReader.AdminPanel/Pages/EditConfigurationDialog.razor *@
+@using MudBlazor
+@inject ConfigurationApiService ApiService
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">
+            <MudIcon Icon="@Icons.Material.Filled.Edit" Class="mr-2" />
+            Edit Configuration: @Configuration?.Name
+        </MudText>
+    </TitleContent>
+    <DialogContent>
+        <MudForm @ref="_form" @bind-IsValid="@_isValid">
+            <MudTextField @bind-Value="_model.Name"
+                          Label="Configuration Name"
+                          Required="true"
+                          Disabled="true"
+                          Variant="Variant.Outlined"
+                          HelperText="Name cannot be changed"
+                          Class="mb-3" />
+
+            <MudSelect @bind-Value="_model.Type"
+                       Label="Value Type"
+                       Required="true"
+                       Disabled="true"
+                       Variant="Variant.Outlined"
+                       HelperText="Type cannot be changed"
+                       Class="mb-3"
+                       T="string">
+                <MudSelectItem T="string" Value="@("string")">String</MudSelectItem>
+                <MudSelectItem T="string" Value="@("int")">Integer</MudSelectItem>
+                <MudSelectItem T="string" Value="@("bool")">Boolean</MudSelectItem>
+                <MudSelectItem T="string" Value="@("double")">Double</MudSelectItem>
+            </MudSelect>
+
+            <MudTextField @bind-Value="_model.Value"
+                          Label="Value"
+                          Required="true"
+                          RequiredError="Value is required"
+                          Variant="Variant.Outlined"
+                          HelperText="@GetValueHelperText()"
+                          Class="mb-3" />
+
+            <MudTextField @bind-Value="_model.ApplicationName"
+                          Label="Application Name"
+                          Required="true"
+                          Disabled="true"
+                          Variant="Variant.Outlined"
+                          HelperText="Application name cannot be changed"
+                          Class="mb-3" />
+
+            <MudSwitch @bind-Value="_model.IsActive"
+                       Label="Is Active"
+                       Color="Color.Primary"
+                       Class="mb-3" />
+
+            <MudAlert Severity="Severity.Info" Class="mt-3">
+                Only Value and IsActive can be updated.
+            </MudAlert>
+        </MudForm>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="OnCancel" Color="Color.Default">
+            Cancel
+        </MudButton>
+        <MudButton Color="Color.Primary"
+                   Variant="Variant.Filled"
+                   OnClick="OnSubmit"
+                   Disabled="@(!_isValid || _saving)"
+                   StartIcon="@Icons.Material.Filled.Save">
+            @if (_saving)
+            {
+                <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                <span>Updating...</span>
+            }
+            else
+            {
+                <span>Update</span>
+            }
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter]
+    public IDialogReference? Dialog { get; set; }
+
+    [Parameter]
+    public ConfigurationItemDto? Configuration { get; set; }
+
+    private MudForm _form = null!;
+    private bool _isValid;
+    private bool _saving;
+    private UpdateConfigurationDto _model = new();
+
+    protected override void OnInitialized()
+    {
+        if (Configuration == null) return;
+
+        _model = new UpdateConfigurationDto
+        {
+            Id = Configuration.Id,
+            Name = Configuration.Name,
+            Type = Configuration.Type,
+            Value = Configuration.Value,
+            ApplicationName = Configuration.ApplicationName,
+            IsActive = Configuration.IsActive
+        };
+    }
+
+    private void OnCancel()
+    {
+        Dialog?.Close(); 
+    }
+
+    private async Task OnSubmit()
+    {
+        await _form.Validate();
+        if (!_isValid) return;
+
+        _saving = true;
+        try
+        {
+            var success = await ApiService.UpdateAsync(_model.Id, _model);
+            if (success)
+            {
+                Snackbar.Add($"Configuration '{_model.Name}' updated successfully", Severity.Success);
+                Dialog?.Close(DialogResult.Ok(true));  // ✅ Result ile = OK
+            }
+            else
+            {
+                Snackbar.Add("Failed to update configuration", Severity.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private string GetValueHelperText() => _model.Type switch
+    {
+        "string" => "Any text value",
+        "int" => "Whole numbers only (e.g., 100)",
+        "bool" => "true or false",
+        "double" => "Decimal numbers (e.g., 3.14)",
+        _ => "Enter a value"
+    };
+}

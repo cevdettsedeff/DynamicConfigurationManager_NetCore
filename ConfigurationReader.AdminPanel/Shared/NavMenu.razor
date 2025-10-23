@@ -1,0 +1,145 @@
+﻿<MudAppBar Elevation="1" Dense="true">
+    <MudIconButton Icon="@Icons.Material.Filled.Menu"
+                   Color="Color.Inherit"
+                   Edge="Edge.Start"
+                   OnClick="@ToggleDrawer"
+                   Class="d-lg-none" />
+
+    <MudText Typo="Typo.h6" Class="ml-3">
+        <MudIcon Icon="@Icons.Material.Filled.Settings" Size="Size.Medium" Class="mr-2" />
+        Configuration Reader
+    </MudText>
+
+    <MudSpacer />
+
+    @* Desktop Navigation *@
+    <MudStack Row="true" Spacing="2" Class="d-none d-lg-flex">
+        <MudButton Href="/"
+                   StartIcon="@Icons.Material.Filled.Home"
+                   Color="@(IsActive("/") ? Color.Primary : Color.Inherit)"
+                   Variant="@(IsActive("/") ? Variant.Filled : Variant.Text)">
+            Home
+        </MudButton>
+
+        <MudButton Href="/configurations"
+                   StartIcon="@Icons.Material.Filled.Settings"
+                   Color="@(IsActive("/configurations") ? Color.Primary : Color.Inherit)"
+                   Variant="@(IsActive("/configurations") ? Variant.Filled : Variant.Text)">
+            Configurations
+        </MudButton>
+
+        <MudButton Href="http://localhost:5000/"
+                   Target="_blank"
+                   StartIcon="@Icons.Material.Filled.Api"
+                   Color="Color.Inherit"
+                   Variant="Variant.Text">
+            API Docs
+        </MudButton>
+
+        <MudButton Href="https://localhost:7002/"
+                   Target="_blank"
+                   StartIcon="@Icons.Material.Filled.Layers"
+                   Color="Color.Inherit"
+                   Variant="Variant.Text">
+            Sample Service
+        </MudButton>
+    </MudStack>
+
+    <MudSpacer />
+
+    @* Right Side Actions *@
+    <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+        <MudIconButton Icon="@Icons.Material.Filled.Refresh"
+                       Color="Color.Inherit"
+                       OnClick="@RefreshData"
+                       Title="Refresh Data" />
+
+        <MudIconButton Icon="@Icons.Material.Filled.Brightness4"
+                       Color="Color.Inherit"
+                       OnClick="@ToggleTheme"
+                       Title="Toggle Dark Mode" />
+
+        <MudMenu Icon="@Icons.Material.Filled.MoreVert" Color="Color.Inherit">
+            <MudMenuItem Icon="@Icons.Material.Filled.Info" Href="https://github.com/cevdettsedeff/" Target="_blank">
+                About
+            </MudMenuItem>
+            <MudMenuItem Icon="@Icons.Material.Filled.Code" Href="https://github.com/cevdettsedeff/DynamicConfigurationManager_NetCore" Target="_blank">
+                Source Code
+            </MudMenuItem>
+            <MudDivider />
+        </MudMenu>
+    </MudStack>
+</MudAppBar>
+
+@* Mobile Drawer *@
+<MudDrawer @bind-Open="@_drawerOpen" Elevation="2" Class="d-lg-none">
+    <MudDrawerHeader>
+        <MudText Typo="Typo.h6">
+            <MudIcon Icon="@Icons.Material.Filled.Settings" Class="mr-2" />
+            Menu
+        </MudText>
+    </MudDrawerHeader>
+    <MudNavMenu>
+        <MudNavLink Href="/"
+                    Match="NavLinkMatch.All"
+                    Icon="@Icons.Material.Filled.Home"
+                    OnClick="@CloseDrawer">
+            Home
+        </MudNavLink>
+        <MudNavLink Href="/configurations"
+                    Match="NavLinkMatch.Prefix"
+                    Icon="@Icons.Material.Filled.Settings"
+                    OnClick="@CloseDrawer">
+            Configurations
+        </MudNavLink>
+        <MudDivider Class="my-2" />
+        <MudNavLink Href="http://localhost:5000/"
+                    Target="_blank"
+                    Icon="@Icons.Material.Filled.Api"
+                    OnClick="@CloseDrawer">
+            API Docs
+        </MudNavLink>
+        <MudNavLink Href="https://localhost:7002/"
+                    Target="_blank"
+                    Icon="@Icons.Material.Filled.Layers"
+                    OnClick="@CloseDrawer">
+            Sample Service
+        </MudNavLink>
+    </MudNavMenu>
+</MudDrawer>
+
+@code {
+    [Inject] private NavigationManager NavigationManager { get; set; } = default!;
+
+    private bool _drawerOpen = false;
+
+    private bool IsActive(string href)
+    {
+        var currentUri = NavigationManager.ToBaseRelativePath(NavigationManager.Uri);
+
+        if (href == "/")
+            return string.IsNullOrEmpty(currentUri) || currentUri == "/";
+
+        return currentUri.StartsWith(href.TrimStart('/'));
+    }
+
+    private void ToggleDrawer()
+    {
+        _drawerOpen = !_drawerOpen;
+    }
+
+    private void CloseDrawer()
+    {
+        _drawerOpen = false;
+    }
+
+    private void RefreshData()
+    {
+        NavigationManager.NavigateTo(NavigationManager.Uri, forceLoad: true);
+    }
+
+    private void ToggleTheme()
+    {
+        // Theme toggle - can be implemented later
+    }
+}

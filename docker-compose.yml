@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:latest
+    container_name: configreader-postgres
+    environment:
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:latest
+    container_name: configreader-redis
+    ports:
+      - "6379:6379"
+
+  api:
+    build:
+      context: .
+      dockerfile: ConfigurationReader.Api/Dockerfile
+    container_name: configreader-api
+    ports:
+      - "5001:5001"
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      - ConnectionStrings__PostgreSQL=Host=postgres;Port=5432;Database=ConfigurationDb;Username=postgres;Password=postgres
+      - ConnectionStrings__Redis=redis:6379
+
+  adminpanel:
+    build:
+      context: .
+      dockerfile: ConfigurationReader.AdminPanel/Dockerfile
+    container_name: configreader-admin
+    ports:
+      - "7001:7001"
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:

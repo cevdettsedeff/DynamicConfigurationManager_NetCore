@@ -1,0 +1,343 @@
+﻿@page "/configurations"
+@using ConfigurationReader.AdminPanel.Models
+@using ConfigurationReader.AdminPanel.Services
+@inject ConfigurationApiService ApiService
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+
+<PageTitle>Configurations</PageTitle>
+
+<MudText Typo="Typo.h3" Class="mb-4">
+    <MudIcon Icon="@Icons.Material.Filled.Settings" Class="mr-2" />
+    Configuration Management
+</MudText>
+
+@if (isLoading)
+{
+    <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-4" />
+    <MudText Align="Align.Center">Loading configurations...</MudText>
+}
+else if (configurations == null || !configurations.Any())
+{
+    <MudAlert Severity="Severity.Info" Class="mb-4">
+        <MudText>No configurations found.</MudText>
+        <MudText Typo="Typo.body2" Class="mt-2">
+            Make sure the API is running and seeded: 
+            <MudLink Href="http://localhost:5000/api/seed" Target="_blank">Seed Database</MudLink>
+        </MudText>
+    </MudAlert>
+}
+else
+{
+    @* Statistics Cards *@
+    <MudGrid Class="mb-4">
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2">
+                <MudCardContent>
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                        <div>
+                            <MudText Typo="Typo.body2" Color="Color.Primary">Total</MudText>
+                            <MudText Typo="Typo.h4">@configurations.Count</MudText>
+                        </div>
+                        <MudIcon Icon="@Icons.Material.Filled.List" Color="Color.Primary" Size="Size.Large" />
+                    </MudStack>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2">
+                <MudCardContent>
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                        <div>
+                            <MudText Typo="Typo.body2" Color="Color.Success">Active</MudText>
+                            <MudText Typo="Typo.h4">@configurations.Count(c => c.IsActive)</MudText>
+                        </div>
+                        <MudIcon Icon="@Icons.Material.Filled.CheckCircle" Color="Color.Success" Size="Size.Large" />
+                    </MudStack>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2">
+                <MudCardContent>
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                        <div>
+                            <MudText Typo="Typo.body2" Color="Color.Warning">Inactive</MudText>
+                            <MudText Typo="Typo.h4">@configurations.Count(c => !c.IsActive)</MudText>
+                        </div>
+                        <MudIcon Icon="@Icons.Material.Filled.Cancel" Color="Color.Warning" Size="Size.Large" />
+                    </MudStack>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2">
+                <MudCardContent>
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                        <div>
+                            <MudText Typo="Typo.body2" Color="Color.Info">Applications</MudText>
+                            <MudText Typo="Typo.h4">@applications.Count</MudText>
+                        </div>
+                        <MudIcon Icon="@Icons.Material.Filled.Apps" Color="Color.Info" Size="Size.Large" />
+                    </MudStack>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+    </MudGrid>
+
+    @* Configurations Table *@
+    <MudPaper Elevation="2" Class="pa-4">
+        <MudTable Items="@GetFilteredConfigurations()" 
+                  Hover="true" 
+                  Striped="true" 
+                  Dense="true" 
+                  @bind-SelectedItem="selectedItem"
+                  Loading="@isLoading"
+                  LoadingProgressColor="Color.Primary">
+            <ToolBarContent>
+                <MudText Typo="Typo.h6">
+                    <MudIcon Icon="@Icons.Material.Filled.List" Class="mr-2" />
+                    Configurations
+                </MudText>
+                <MudSpacer />
+                
+                @* Application Filter *@
+                <MudSelect T="string" 
+                           Label="Application" 
+                           @bind-Value="selectedApplication" 
+                           Clearable="true"
+                           Variant="Variant.Outlined"
+                           Margin="Margin.Dense"
+                           Class="mr-2"
+                           Style="min-width: 200px;">
+                    @foreach (var app in applications)
+                    {
+                        <MudSelectItem Value="@app">@app</MudSelectItem>
+                    }
+                </MudSelect>
+
+                @* Search *@
+                <MudTextField @bind-Value="searchString" 
+                              Placeholder="Search..." 
+                              Adornment="Adornment.Start" 
+                              AdornmentIcon="@Icons.Material.Filled.Search" 
+                              IconSize="Size.Medium"
+                              Variant="Variant.Outlined"
+                              Margin="Margin.Dense"
+                              Class="mr-2" />
+                
+                @* Actions *@
+                <MudButton Variant="Variant.Filled" 
+                           Color="Color.Primary" 
+                           StartIcon="@Icons.Material.Filled.Add" 
+                           OnClick="OpenCreateDialog"
+                           Size="Size.Small">
+                    Create
+                </MudButton>
+                <MudButton Variant="Variant.Filled" 
+                           Color="Color.Secondary" 
+                           StartIcon="@Icons.Material.Filled.Refresh" 
+                           OnClick="LoadData" 
+                           Size="Size.Small"
+                           Class="ml-2">
+                    Refresh
+                </MudButton>
+            </ToolBarContent>
+            
+            <HeaderContent>
+                <MudTh><MudTableSortLabel SortBy="new Func<ConfigurationItemDto, object>(x => x.ApplicationName)">Application</MudTableSortLabel></MudTh>
+                <MudTh><MudTableSortLabel SortBy="new Func<ConfigurationItemDto, object>(x => x.Name)">Name</MudTableSortLabel></MudTh>
+                <MudTh><MudTableSortLabel SortBy="new Func<ConfigurationItemDto, object>(x => x.Type)">Type</MudTableSortLabel></MudTh>
+                <MudTh>Value</MudTh>
+                <MudTh><MudTableSortLabel SortBy="new Func<ConfigurationItemDto, object>(x => x.IsActive)">Status</MudTableSortLabel></MudTh>
+                <MudTh><MudTableSortLabel SortBy="new Func<ConfigurationItemDto, object>(x => x.UpdatedAt)">Updated</MudTableSortLabel></MudTh>
+                <MudTh Style="text-align: right;">Actions</MudTh>
+            </HeaderContent>
+            
+            <RowTemplate>
+                <MudTd DataLabel="Application">
+                    <MudChip T="string" Size="Size.Small" Color="Color.Info">@context!.ApplicationName</MudChip>
+                </MudTd>
+                <MudTd DataLabel="Name">
+                    <MudText Typo="Typo.body2"><strong>@context!.Name</strong></MudText>
+                </MudTd>
+                <MudTd DataLabel="Type">
+                    <MudChip T="string" Size="Size.Small" Color="@GetTypeColor(context!.Type)">@context.Type</MudChip>
+                </MudTd>
+                <MudTd DataLabel="Value">
+                    <MudText Typo="Typo.body2">
+                        <code style="background-color: #f5f5f5; padding: 2px 6px; border-radius: 3px;">
+                            @(context!.Value.Length > 50 ? context.Value.Substring(0, 50) + "..." : context.Value)
+                        </code>
+                    </MudText>
+                </MudTd>
+                <MudTd DataLabel="Status">
+                    @if (context!.IsActive)
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Success" Icon="@Icons.Material.Filled.CheckCircle">Active</MudChip>
+                    }
+                    else
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Default" Icon="@Icons.Material.Filled.Cancel">Inactive</MudChip>
+                    }
+                </MudTd>
+                <MudTd DataLabel="Updated">
+                    <MudText Typo="Typo.body2">@context!.UpdatedAt.ToString("yyyy-MM-dd HH:mm")</MudText>
+                </MudTd>
+                <MudTd DataLabel="Actions" Style="text-align: right;">
+                    <MudTooltip Text="Edit Configuration">
+                        <MudIconButton Icon="@Icons.Material.Filled.Edit" 
+                                       Color="Color.Primary" 
+                                       Size="Size.Small" 
+                                       OnClick="@(() => OpenEditDialog(context!))" />
+                    </MudTooltip>
+                    <MudTooltip Text="Delete Configuration">
+                        <MudIconButton Icon="@Icons.Material.Filled.Delete" 
+                                       Color="Color.Error" 
+                                       Size="Size.Small" 
+                                       OnClick="@(() => DeleteConfiguration(context!))" />
+                    </MudTooltip>
+                </MudTd>
+            </RowTemplate>
+            
+            <PagerContent>
+                <MudTablePager PageSizeOptions="new int[] { 10, 25, 50, 100 }" />
+            </PagerContent>
+        </MudTable>
+    </MudPaper>
+}
+
+@code {
+    private List<ConfigurationItemDto> configurations = new();
+    private List<string> applications = new();
+    private ConfigurationItemDto? selectedItem;
+    private bool isLoading = true;
+    private string searchString = "";
+    private string? selectedApplication;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadData();
+    }
+
+    private async Task LoadData()
+    {
+        isLoading = true;
+        StateHasChanged();
+
+        try
+        {
+            configurations = await ApiService.GetAllAsync();
+            applications = await ApiService.GetApplicationNamesAsync();
+            
+            Console.WriteLine($"[Configurations] Loaded {configurations.Count} configurations");
+            Console.WriteLine($"[Configurations] Applications: {string.Join(", ", applications)}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Configurations] Error: {ex.Message}");
+            Snackbar.Add($"Error loading data: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private IEnumerable<ConfigurationItemDto> GetFilteredConfigurations()
+    {
+        var filtered = configurations.AsEnumerable();
+
+        // Application filter
+        if (!string.IsNullOrWhiteSpace(selectedApplication))
+        {
+            filtered = filtered.Where(c => c.ApplicationName == selectedApplication);
+        }
+
+        // Search filter
+        if (!string.IsNullOrWhiteSpace(searchString))
+        {
+            filtered = filtered.Where(c =>
+                c.Name.Contains(searchString, StringComparison.OrdinalIgnoreCase) ||
+                c.ApplicationName.Contains(searchString, StringComparison.OrdinalIgnoreCase) ||
+                c.Value.Contains(searchString, StringComparison.OrdinalIgnoreCase));
+        }
+
+        return filtered;
+    }
+
+    private Color GetTypeColor(string type) => type switch
+    {
+        "String" or "string" => Color.Info,
+        "Int" or "int" => Color.Primary,
+        "Bool" or "bool" => Color.Success,
+        "Double" or "double" => Color.Warning,
+        _ => Color.Default
+    };
+
+    private async Task OpenCreateDialog()
+    {
+        var options = new DialogOptions 
+        { 
+            CloseOnEscapeKey = true,
+            MaxWidth = MaxWidth.Small, 
+            FullWidth = true 
+        };
+
+        var dialog = await DialogService.ShowAsync<CreateConfigurationDialog>("Create Configuration", options);
+        var result = await dialog.Result;
+
+        if (!result!.Canceled)
+        {
+            await LoadData();
+        }
+    }
+
+    private async Task OpenEditDialog(ConfigurationItemDto config)
+    {
+        var parameters = new DialogParameters
+        {
+            ["Configuration"] = config
+        };
+
+        var options = new DialogOptions 
+        { 
+            CloseOnEscapeKey = true,
+            MaxWidth = MaxWidth.Small, 
+            FullWidth = true 
+        };
+
+        var dialog = await DialogService.ShowAsync<EditConfigurationDialog>("Edit Configuration", parameters, options);
+        var result = await dialog.Result;
+
+        if (!result!.Canceled)
+        {
+            await LoadData();
+        }
+    }
+
+    private async Task DeleteConfiguration(ConfigurationItemDto config)
+    {
+        var result = await DialogService.ShowMessageBox(
+            "Delete Configuration",
+            $"Are you sure you want to delete '{config.Name}' from {config.ApplicationName}?",
+            yesText: "Delete",
+            cancelText: "Cancel",
+            options: new DialogOptions { CloseOnEscapeKey = true });
+
+        if (result == true)
+        {
+            var success = await ApiService.DeleteAsync(config.Id);
+            if (success)
+            {
+                Snackbar.Add($"Configuration '{config.Name}' deleted successfully!", Severity.Success);
+                await LoadData();
+            }
+            else
+            {
+                Snackbar.Add("Failed to delete configuration", Severity.Error);
+            }
+        }
+    }
+}
