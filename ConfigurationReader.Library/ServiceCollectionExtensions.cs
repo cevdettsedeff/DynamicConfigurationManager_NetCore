@@ -1,6 +1,5 @@
 ﻿// ConfigurationReader.Library/ServiceCollectionExtensions.cs
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
 
 namespace ConfigurationReader.Library;
 
@@ -16,6 +15,7 @@ public static class ServiceCollectionExtensions
         if (configureOptions == null)
             throw new ArgumentNullException(nameof(configureOptions));
 
+        // Create and configure options
         var options = new ConfigurationReaderOptions();
         configureOptions(options);
 
@@ -26,10 +26,11 @@ public static class ServiceCollectionExtensions
         if (string.IsNullOrWhiteSpace(options.ConnectionString))
             throw new ArgumentException("ConnectionString is required");
 
+        // Register as singleton
         services.AddSingleton<IConfigurationReader>(provider =>
         {
-            var logger = provider.GetService<ILogger<ConfigurationReader>>();
-            return new ConfigurationReader(options, logger);
+            // ✅ Options ile constructor çağır (logger yok)
+            return new ConfigurationReader(options);
         });
 
         return services;

@@ -1,279 +1,323 @@
 ﻿// ConfigurationReader.Library/ConfigurationReader.cs
-using ConfigurationReader.Library.Models;
-using Microsoft.Extensions.Logging;
+using System.Collections.Concurrent;
+using System.Collections.ObjectModel;
 using Npgsql;
 using StackExchange.Redis;
-using System.Collections.Concurrent;
-using System.Text.Json;
 
 namespace ConfigurationReader.Library;
 
 public class ConfigurationReader : IConfigurationReader, IDisposable
 {
-    private readonly ConfigurationReaderOptions _options;
-    private readonly ILogger<ConfigurationReader>? _logger;
-    private readonly ConcurrentDictionary<string, string> _cache;
-    private readonly Timer? _refreshTimer;
-    private readonly IConnectionMultiplexer? _redis;
+    private readonly ConcurrentDictionary<string, string> _cache = new();
     private readonly IDatabase? _redisDb;
-    private bool _disposed;
+    private readonly string _connectionString;
+    private readonly string _applicationName;
+    private readonly TimeSpan _cacheExpiration;
+    private readonly Timer _refreshTimer;
+    private readonly bool _enableLogging;
 
-    public ConfigurationReader(ConfigurationReaderOptions options, ILogger<ConfigurationReader>? logger = null)
+    // 3 Parametreli Constructor (Minimalist)
+    public ConfigurationReader(
+        string applicationName,
+        string connectionString,
+        int refreshTimerIntervalInMs)
     {
-        _options = options ?? throw new ArgumentNullException(nameof(options));
-        _logger = logger;
-        _cache = new ConcurrentDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrEmpty(applicationName))
+            throw new ArgumentException("ApplicationName cannot be null or empty", nameof(applicationName));
 
-        // Redis connection (optional)
-        if (!string.IsNullOrWhiteSpace(_options.RedisConnectionString))
+        if (string.IsNullOrEmpty(connectionString))
+            throw new ArgumentException("ConnectionString cannot be null or empty", nameof(connectionString));
+
+        if (refreshTimerIntervalInMs <= 0)
+            throw new ArgumentException("RefreshTimerIntervalInMs must be greater than 0", nameof(refreshTimerIntervalInMs));
+
+        _applicationName = applicationName;
+        _connectionString = connectionString;
+        _cacheExpiration = TimeSpan.FromMinutes(5);
+        _enableLogging = false;
+
+        RefreshAsync().Wait();
+
+        var interval = TimeSpan.FromMilliseconds(refreshTimerIntervalInMs);
+        _refreshTimer = new Timer(
+            async _ => await RefreshAsync(),
+            null,
+            interval,
+            interval
+        );
+
+        Log($"ConfigurationReader initialized for '{_applicationName}' (Refresh: {refreshTimerIntervalInMs}ms)");
+    }
+
+    // Options ile Constructor (DI için)
+    public ConfigurationReader(ConfigurationReaderOptions options)
+    {
+        if (string.IsNullOrEmpty(options.ApplicationName))
+            throw new ArgumentException("ApplicationName is required", nameof(options));
+
+        if (string.IsNullOrEmpty(options.ConnectionString))
+            throw new ArgumentException("ConnectionString is required", nameof(options));
+
+        _connectionString = options.ConnectionString;
+        _applicationName = options.ApplicationName;
+        _cacheExpiration = TimeSpan.FromMinutes(options.CacheExpirationMinutes);
+        _enableLogging = options.EnableLogging;
+
+        if (!string.IsNullOrEmpty(options.RedisConnectionString))
         {
             try
             {
-                _redis = ConnectionMultiplexer.Connect(_options.RedisConnectionString);
-                _redisDb = _redis.GetDatabase();
-                _logger?.LogInformation("Redis connection established");
+                var redis = ConnectionMultiplexer.Connect(options.RedisConnectionString);
+                _redisDb = redis.GetDatabase();
+                Log("Redis connected successfully");
             }
             catch (Exception ex)
             {
-                _logger?.LogWarning(ex, "Failed to connect to Redis, continuing without cache");
+                Log($"Redis connection failed: {ex.Message}");
             }
         }
 
-        // Initial load
-        _ = Task.Run(() => RefreshAsync());
+        RefreshAsync().Wait();
 
-        // Auto-refresh timer
-        if (_options.RefreshIntervalSeconds > 0)
-        {
-            _refreshTimer = new Timer(
-                async _ => await RefreshAsync(),
-                null,
-                TimeSpan.FromSeconds(_options.RefreshIntervalSeconds),
-                TimeSpan.FromSeconds(_options.RefreshIntervalSeconds));
+        var interval = TimeSpan.FromMilliseconds(options.RefreshTimerIntervalInMs);
+        _refreshTimer = new Timer(
+            async _ => await RefreshAsync(),
+            null,
+            interval,
+            interval
+        );
 
-            _logger?.LogInformation(
-                "Auto-refresh enabled: every {Interval} seconds",
-                _options.RefreshIntervalSeconds);
-        }
+        Log($"ConfigurationReader initialized for '{_applicationName}' (Refresh: {options.RefreshTimerIntervalInMs}ms)");
     }
 
+    // ✅ GetValue<T>(string key)
     public T GetValue<T>(string key)
     {
-        return GetValueAsync<T>(key).GetAwaiter().GetResult();
-    }
-
-    public T GetValue<T>(string key, T defaultValue)
-    {
-        return GetValueAsync(key, defaultValue).GetAwaiter().GetResult();
-    }
-
-    public async Task<T> GetValueAsync<T>(string key, CancellationToken cancellationToken = default)
-    {
-        if (string.IsNullOrWhiteSpace(key))
-            throw new ArgumentException("Key cannot be null or empty", nameof(key));
-
-        // Try in-memory cache first
         if (_cache.TryGetValue(key, out var cachedValue))
         {
+            Log($"[MEMORY HIT] {key}");
             return ConvertValue<T>(cachedValue);
         }
 
-        // Try Redis cache
         if (_redisDb != null)
         {
             try
             {
                 var redisKey = GetRedisKey(key);
-                var redisValue = await _redisDb.StringGetAsync(redisKey);
+                var redisValue = _redisDb.StringGet(redisKey);
 
                 if (redisValue.HasValue)
                 {
-                    var value = redisValue.ToString();
-                    _cache.TryAdd(key, value);
-                    return ConvertValue<T>(value);
+                    Log($"[REDIS HIT] {key}");
+                    _cache.TryAdd(key, redisValue!);
+                    return ConvertValue<T>(redisValue!);
                 }
             }
             catch (Exception ex)
             {
-                _logger?.LogWarning(ex, "Redis cache read failed for key: {Key}", key);
+                Log($"Redis read error: {ex.Message}");
             }
         }
 
-        // Fallback to database
-        var dbValue = await GetFromDatabaseAsync(key, cancellationToken);
-        if (dbValue != null)
+        Log($"[DATABASE HIT] {key}");
+        var dbValue = GetFromDatabase(key);
+
+        _cache.TryAdd(key, dbValue);
+
+        if (_redisDb != null)
         {
-            _cache.TryAdd(key, dbValue);
-            await CacheToRedisAsync(key, dbValue);
-            return ConvertValue<T>(dbValue);
+            try
+            {
+                _redisDb.StringSet(GetRedisKey(key), dbValue, _cacheExpiration);
+            }
+            catch (Exception ex)
+            {
+                Log($"Redis write error: {ex.Message}");
+            }
         }
 
-        throw new KeyNotFoundException($"Configuration key '{key}' not found for application '{_options.ApplicationName}'");
+        return ConvertValue<T>(dbValue);
     }
 
-    public async Task<T> GetValueAsync<T>(string key, T defaultValue, CancellationToken cancellationToken = default)
+    // ✅ GetValue<T>(string key, T defaultValue) - YENİ!
+    public T GetValue<T>(string key, T defaultValue)
     {
         try
         {
-            return await GetValueAsync<T>(key, cancellationToken);
+            return GetValue<T>(key);
         }
         catch (KeyNotFoundException)
         {
-            _logger?.LogWarning("Configuration key '{Key}' not found, returning default value", key);
+            Log($"Configuration '{key}' not found for application '{_applicationName}', using default value: {defaultValue}");
+            return defaultValue;
+        }
+        catch (Exception ex)
+        {
+            Log($"Error reading '{key}': {ex.Message}, using default value: {defaultValue}");
             return defaultValue;
         }
     }
 
-    public async Task RefreshAsync(CancellationToken cancellationToken = default)
+    // ✅ GetValueAsync<T>(string key)
+    public async Task<T> GetValueAsync<T>(string key)
+    {
+        return await Task.Run(() => GetValue<T>(key));
+    }
+
+    // ✅ GetValueAsync<T>(string key, T defaultValue) - YENİ!
+    public async Task<T> GetValueAsync<T>(string key, T defaultValue)
+    {
+        return await Task.Run(() => GetValue(key, defaultValue));
+    }
+
+    // ✅ TryGetValue<T>
+    public bool TryGetValue<T>(string key, out T value)
     {
         try
         {
-            _logger?.LogInformation("Refreshing configurations for '{ApplicationName}'", _options.ApplicationName);
+            value = GetValue<T>(key);
+            return true;
+        }
+        catch
+        {
+            value = default!;
+            return false;
+        }
+    }
 
-            var configs = await LoadAllFromDatabaseAsync(cancellationToken);
+    // ✅ RefreshAsync
+    public async Task RefreshAsync()
+    {
+        try
+        {
+            Log("Refreshing configurations from database...");
 
-            _cache.Clear();
-            foreach (var config in configs)
+            using var connection = new NpgsqlConnection(_connectionString);
+            await connection.OpenAsync();
+
+            // ✅ SADECE BU APPLICATION'IN CONFIG'LERİNİ ÇEK!
+            var sql = @"
+                SELECT ""Name"", ""Value"" 
+                FROM ""ConfigurationItems"" 
+                WHERE ""ApplicationName"" = @ApplicationName 
+                  AND ""IsActive"" = true";
+
+            using var command = new NpgsqlCommand(sql, connection);
+            command.Parameters.AddWithValue("ApplicationName", _applicationName);
+
+            using var reader = await command.ExecuteReaderAsync();
+
+            var newCache = new ConcurrentDictionary<string, string>();
+
+            while (await reader.ReadAsync())
             {
-                _cache.TryAdd(config.Name, config.Value);
-                await CacheToRedisAsync(config.Name, config.Value);
+                var name = reader.GetString(0);
+                var value = reader.GetString(1);
+
+                newCache.TryAdd(name, value);
+
+                if (_redisDb != null)
+                {
+                    try
+                    {
+                        await _redisDb.StringSetAsync(GetRedisKey(name), value, _cacheExpiration);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"Redis write error for key '{name}': {ex.Message}");
+                    }
+                }
             }
 
-            _logger?.LogInformation("Loaded {Count} configurations", configs.Count);
+            _cache.Clear();
+            foreach (var kvp in newCache)
+            {
+                _cache.TryAdd(kvp.Key, kvp.Value);
+            }
+
+            Log($"Successfully refreshed {_cache.Count} configurations for application '{_applicationName}'");
         }
         catch (Exception ex)
         {
-            _logger?.LogError(ex, "Failed to refresh configurations");
+            Log($"Refresh error: {ex.Message}");
+            throw;
         }
     }
 
+    // ✅ GetAll
     public IReadOnlyDictionary<string, string> GetAll()
     {
-        return _cache.ToDictionary(x => x.Key, x => x.Value);
+        Log($"Getting all configurations for application '{_applicationName}'");
+        return new ReadOnlyDictionary<string, string>(_cache);
     }
 
-    private async Task<string?> GetFromDatabaseAsync(string key, CancellationToken cancellationToken)
+    private string GetFromDatabase(string key)
     {
-        await using var connection = new NpgsqlConnection(_options.ConnectionString);
-        await connection.OpenAsync(cancellationToken);
+        using var connection = new NpgsqlConnection(_connectionString);
+        connection.Open();
 
+        // ✅ SADECE BU APPLICATION'IN CONFIG'İNİ ÇEK!
         var sql = @"
             SELECT ""Value"" 
             FROM ""ConfigurationItems"" 
             WHERE ""ApplicationName"" = @ApplicationName 
               AND ""Name"" = @Name 
-              AND ""IsActive"" = true
-            LIMIT 1";
-
-        await using var command = new NpgsqlCommand(sql, connection);
-        command.Parameters.AddWithValue("ApplicationName", _options.ApplicationName);
-        command.Parameters.AddWithValue("Name", key);
-
-        var result = await command.ExecuteScalarAsync(cancellationToken);
-        return result?.ToString();
-    }
-
-    private async Task<List<ConfigurationItem>> LoadAllFromDatabaseAsync(CancellationToken cancellationToken)
-    {
-        await using var connection = new NpgsqlConnection(_options.ConnectionString);
-        await connection.OpenAsync(cancellationToken);
-
-        var sql = @"
-            SELECT ""Id"", ""Name"", ""Type"", ""Value"", ""IsActive"", ""ApplicationName"", ""UpdatedAt""
-            FROM ""ConfigurationItems"" 
-            WHERE ""ApplicationName"" = @ApplicationName 
               AND ""IsActive"" = true";
 
-        await using var command = new NpgsqlCommand(sql, connection);
-        command.Parameters.AddWithValue("ApplicationName", _options.ApplicationName);
+        using var command = new NpgsqlCommand(sql, connection);
+        command.Parameters.AddWithValue("ApplicationName", _applicationName);
+        command.Parameters.AddWithValue("Name", key);
 
-        var configs = new List<ConfigurationItem>();
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var result = command.ExecuteScalar();
 
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            configs.Add(new ConfigurationItem
-            {
-                Id = reader.GetInt32(0),
-                Name = reader.GetString(1),
-                Type = reader.GetString(2),
-                Value = reader.GetString(3),
-                IsActive = reader.GetBoolean(4),
-                ApplicationName = reader.GetString(5),
-                UpdatedAt = reader.GetDateTime(6)
-            });
-        }
+        if (result == null)
+            throw new KeyNotFoundException(
+                $"Configuration '{key}' not found for application '{_applicationName}'");
 
-        return configs;
-    }
-
-    private async Task CacheToRedisAsync(string key, string value)
-    {
-        if (_redisDb == null) return;
-
-        try
-        {
-            var redisKey = GetRedisKey(key);
-            var expiry = TimeSpan.FromMinutes(_options.CacheExpirationMinutes);
-            await _redisDb.StringSetAsync(redisKey, value, expiry);
-        }
-        catch (Exception ex)
-        {
-            _logger?.LogWarning(ex, "Failed to cache to Redis: {Key}", key);
-        }
+        return result.ToString()!;
     }
 
     private string GetRedisKey(string key)
     {
-        return $"config:{_options.ApplicationName}:{key}";
+        // ✅ Redis key'e application name ekle (collision prevention)
+        return $"config:{_applicationName}:{key}";
     }
 
     private T ConvertValue<T>(string value)
     {
         var targetType = typeof(T);
 
-        // Handle nullable types
-        var underlyingType = Nullable.GetUnderlyingType(targetType) ?? targetType;
+        if (targetType == typeof(string))
+            return (T)(object)value;
 
-        try
+        if (targetType == typeof(int))
+            return (T)(object)int.Parse(value);
+
+        if (targetType == typeof(bool))
+            return (T)(object)bool.Parse(value);
+
+        if (targetType == typeof(double))
+            return (T)(object)double.Parse(value);
+
+        if (targetType == typeof(long))
+            return (T)(object)long.Parse(value);
+
+        if (targetType == typeof(decimal))
+            return (T)(object)decimal.Parse(value);
+
+        throw new NotSupportedException($"Type {targetType.Name} is not supported");
+    }
+
+    private void Log(string message)
+    {
+        if (_enableLogging)
         {
-            if (underlyingType == typeof(string))
-                return (T)(object)value;
-
-            if (underlyingType == typeof(int))
-                return (T)(object)int.Parse(value);
-
-            if (underlyingType == typeof(long))
-                return (T)(object)long.Parse(value);
-
-            if (underlyingType == typeof(double))
-                return (T)(object)double.Parse(value);
-
-            if (underlyingType == typeof(bool))
-                return (T)(object)bool.Parse(value);
-
-            if (underlyingType == typeof(DateTime))
-                return (T)(object)DateTime.Parse(value);
-
-            // Try JSON deserialization for complex types
-            return JsonSerializer.Deserialize<T>(value)
-                   ?? throw new InvalidOperationException($"Failed to deserialize value to type {typeof(T).Name}");
-        }
-        catch (Exception ex)
-        {
-            _logger?.LogError(ex, "Failed to convert value '{Value}' to type {Type}", value, typeof(T).Name);
-            throw new InvalidCastException($"Cannot convert '{value}' to type {typeof(T).Name}", ex);
+            Console.WriteLine($"[ConfigurationReader] {message}");
         }
     }
 
     public void Dispose()
     {
-        if (_disposed) return;
-
         _refreshTimer?.Dispose();
-        _redis?.Dispose();
-        _disposed = true;
-
-        GC.SuppressFinalize(this);
     }
 }

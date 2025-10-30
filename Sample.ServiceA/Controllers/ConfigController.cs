@@ -45,7 +45,7 @@ public class ConfigController : ControllerBase
         _logger.LogInformation("Manual refresh requested");
         await _configReader.RefreshAsync();
 
-        var configs = _configReader.GetAll();
+        var configs = _configReader. GetAll();
         return Ok(new
         {
             message = "Configurations refreshed successfully",
